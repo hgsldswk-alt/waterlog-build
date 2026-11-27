@@ -1,0 +1,391 @@
+import XCTest
+
+final class FlowUITests: XCTestCase {
+    private enum StoreLanguage: String {
+        case simplified = "zh-Hans"
+        case traditional = "zh-Hant"
+        case english = "en"
+
+        var locale: String {
+            switch self {
+            case .simplified: return "zh_CN"
+            case .traditional: return "zh_TW"
+            case .english: return "en_US"
+            }
+        }
+    }
+
+    private var app: XCUIApplication!
+
+    override func setUp() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+    }
+
+    private func launch(_ args: [String] = [], language: StoreLanguage = .simplified,
+                        reset: Bool = true, environment: [String: String] = [:]) {
+        app.launchArguments = ["-ui-testing", "-AppleLanguages", "(\(language.rawValue))", "-AppleLocale", language.locale]
+            + (reset ? ["-reset"] : []) + args
+        app.launchEnvironment = environment
+        app.launch()
+    }
+
+    private func element(_ id: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+
+    private func tap(_ id: String, scroll: Bool = false) {
+        let buttons = app.buttons.matching(identifier: id)
+        if scroll {
+            for _ in 0..<4 {
+                if firstHittable(in: buttons) != nil { break }
+                app.swipeUp()
+            }
+        }
+        tap(buttons, named: id)
+    }
+
+    private func tap(_ query: XCUIElementQuery, named name: String) {
+        guard let button = waitForHittable(in: query) else {
+            XCTFail("No hittable button for \(name)")
+            return
+        }
+        button.tap()
+    }
+
+    private func firstHittable(in query: XCUIElementQuery) -> XCUIElement? {
+        query.allElementsBoundByIndex.first { candidate in
+            guard candidate.exists else { return false }
+            let frame = candidate.frame
+            guard !frame.isEmpty, !frame.isInfinite,
+                  app.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) else { return false }
+            return candidate.isHittable
+        }
+    }
+
+    private func waitForHittable(in query: XCUIElementQuery, timeout: TimeInterval = 8) -> XCUIElement? {
+        var match: XCUIElement?
+        let predicate = NSPredicate { _, _ in
+            match = self.firstHittable(in: query)
+            return match != nil
+        }
+        let matchFound = XCTNSPredicateExpectation(predicate: predicate, object: nil)
+        guard XCTWaiter().wait(for: [matchFound], timeout: timeout) == .completed else { return nil }
+        return match
+    }
+
+    private func expect(_ id: String, contains text: String) {
+        let predicate = NSPredicate(format: "label CONTAINS %@", text)
+        let matching = app.descendants(matching: .any).matching(identifier: id).matching(predicate)
+        if matching.firstMatch.waitForExistence(timeout: 8) { return }
+
+        let target = element(id)
+        let actual = target.exists ? target.label : "<missing>"
+        XCTFail("\(id) should contain \(text), actual: \(actual)")
+    }
+
+    private func replace(_ id: String, with text: String) {
+        guard let field = waitForHittable(in: app.textFields.matching(identifier: id)) else {
+            XCTFail("No hittable text field for \(id)")
+            return
+        }
+        func currentText() -> String {
+            guard let value = field.value as? String, value != field.placeholderValue else { return "" }
+            return value
+        }
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5)).tap()
+        let existing = currentText()
+        if !existing.isEmpty {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count))
+        }
+        XCTAssertEqual(currentText(), "", "\(id) should be empty before typing")
+        if !text.isEmpty { field.typeText(text) }
+        XCTAssertEqual(currentText(), text, "\(id) should contain exactly the replacement")
+    }
+
+    private func back() {
+        let button = app.navigationBars.buttons.element(boundBy: 0)
+        XCTAssertTrue(button.waitForExistence(timeout: 8))
+        button.tap()
+    }
+
+    private func tapDayEntry(amount: String) {
+        let predicate = NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "day.entry.", amount)
+        tap(app.buttons.matching(predicate), named: "history entry with \(amount)")
+    }
+
+    private func expectShareRequest(type: String) {
+        let request = app.buttons["share.requested"]
+        XCTAssertTrue(request.waitForExistence(timeout: 8), "Share request for \(type) should appear")
+        XCTAssertTrue(request.label.hasSuffix(type), "Expected a share request for \(type), got \(request.label)")
+        let byteCount = (request.value as? String).flatMap(Int.init) ?? 0
+        XCTAssertGreaterThan(byteCount, 0, "The generated \(type) should contain data")
+        request.tap()
+    }
+
+    private func shot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testColdStartOneTapUndoAndMultipleAdds() {
+        launch()
+        expect("today.total", contains: "0 mL")
+        tap("today.cup.1")
+        expect("today.total", contains: "250 mL")
+        tap("today.undo")
+        expect("today.total", contains: "0 mL")
+        tap("today.cup.0")
+        tap("today.cup.1")
+        tap("today.cup.2")
+        tap("today.undo")
+        expect("today.total", contains: "400 mL")
+        XCTAssertTrue(app.buttons["today.entry.0"].exists)
+        XCTAssertTrue(app.buttons["today.entry.1"].exists)
+        XCTAssertFalse(app.buttons["today.entry.2"].exists)
+    }
+
+    func testFailedQuickSaveRetriesOnceAndPersists() {
+        launch(["-fail-first-save"])
+        tap("today.cup.1")
+        XCTAssertTrue(element("today.saveFailed").waitForExistence(timeout: 8))
+        expect("today.total", contains: "0 mL")
+        tap("today.retry")
+        expect("today.total", contains: "250 mL")
+        app.terminate()
+        launch(reset: false)
+        expect("today.total", contains: "250 mL")
+        XCTAssertFalse(app.buttons["today.entry.1"].exists)
+    }
+
+    func testCustomBackfillEditDeleteAndExport() {
+        launch(["-demo"])
+        tap("today.custom")
+        let amount = app.textFields["entry.amount"]
+        XCTAssertTrue(amount.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        amount.typeText("330")
+        tap("entry.time", scroll: true)
+        tap("entry.yesterday", scroll: true)
+        tap("entry.save")
+        expect("today.total", contains: "750 mL")
+
+        tap("today.history")
+        tap("history.day.2026-11-18")
+        expect("day.total", contains: "580 mL")
+        tapDayEntry(amount: "330 mL")
+        replace("entry.amount", with: "360")
+        tap("entry.drink.tea", scroll: true)
+        tap("entry.save")
+        expect("day.total", contains: "610 mL")
+        tapDayEntry(amount: "360 mL")
+        tap("entry.delete", scroll: true)
+        let labels = ["删除记录", "刪除紀錄", "Delete entry"]
+        let predicate = NSPredicate(format: "label IN %@ AND identifier != %@", labels, "entry.delete")
+        tap(app.buttons.matching(predicate), named: "confirm deleting the entry")
+        expect("day.total", contains: "250 mL")
+        back()
+        tap("history.menu")
+        let export = NSPredicate(format: "identifier == %@ OR label IN %@",
+                                 "history.exportCSV", ["导出 CSV", "匯出 CSV", "Export CSV"])
+        tap(app.buttons.matching(export), named: "export CSV")
+        expectShareRequest(type: "CSV")
+    }
+
+    func testUnitGoalAndNotificationDenial() {
+        launch(["-notifications-denied", "-demo"])
+        tap("today.settings")
+        tap("settings.unit.oz")
+        tap("settings.goal")
+        replace("goal.amount", with: "30")
+        tap("goal.save")
+        let toggle = app.switches["settings.reminder"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        XCTAssertTrue(element("settings.notificationsDenied").waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["settings.system"].exists)
+        back()
+        expect("today.total", contains: "fl oz")
+        tap("today.cup.1")
+        expect("today.total", contains: "33.81")
+        tap("today.settings")
+        tap("settings.unit.ml")
+        tap("settings.goal")
+        replace("goal.amount", with: "")
+        tap("goal.save")
+        back()
+        expect("today.total", contains: "1,000")
+    }
+
+    func testReminderTimeAndLargeType() {
+        launch(["-large-text"])
+        tap("today.cup.1", scroll: true)
+        expect("today.total", contains: "250 mL")
+        app.terminate()
+        launch()
+        tap("today.settings")
+        let toggle = app.switches["settings.reminder"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        tap("settings.reminderTime")
+        XCTAssertTrue(element("reminder.time").waitForExistence(timeout: 8))
+        tap("reminder.save")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                            object: app.buttons["settings.reminderTime"])
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 8), .completed)
+    }
+
+    func testImportPreviewCancelConfirmAndCopy() {
+        launch(environment: ["WATERLOG_TEST_CUP_CODE": "\nWATER1:125.125-350-650\n"])
+        tap("today.presets")
+        tap("cups.import", scroll: true)
+        tap("import.paste")
+        XCTAssertTrue(app.buttons["import.apply"].waitForExistence(timeout: 8))
+        tap("import.cancel")
+        tap("cups.close")
+        expect("today.cup.1", contains: "250 mL")
+
+        tap("today.presets")
+        tap("cups.import", scroll: true)
+        tap("import.paste")
+        tap("import.apply", scroll: true)
+        tap("cups.share", scroll: true)
+        expect("cups.code", contains: "WATER1:125.125-350-650")
+        tap("cups.copyCode")
+        tap("cups.code.close")
+        tap("cups.close")
+        expect("today.cup.1", contains: "350 mL")
+    }
+
+    func testInvalidCodeLeavesActiveAmountsUntouched() {
+        launch(environment: ["WATERLOG_TEST_CUP_CODE": "WATER2:125-350-650"])
+        tap("today.presets")
+        tap("cups.import", scroll: true)
+        tap("import.paste")
+        XCTAssertTrue(element("form.error").waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["import.apply"].exists)
+        tap("import.cancel")
+        tap("cups.close")
+        expect("today.cup.1", contains: "250")
+    }
+
+    func testTrialThenExpirationRetainsGroupsAndRestoreUnlocksReport() {
+        launch(["-demo"])
+        tap("today.history")
+        tap("history.report")
+        XCTAssertTrue(element("report.count").waitForExistence(timeout: 8))
+        back()
+        back()
+        tap("today.presets")
+        tap("cups.addGroup", scroll: true)
+        let addGroupCancel = app.buttons.matching(identifier: "cups.new.cancel")
+        XCTAssertNotNil(waitForHittable(in: addGroupCancel))
+        replace("cups.name", with: "Office")
+        replace("cups.amount.1", with: "400")
+        let addGroupNavigation = app.navigationBars.containing(.button, identifier: "cups.new.cancel")
+        tap(addGroupNavigation.buttons.matching(identifier: "cups.save"), named: "cups.save (add group)")
+        XCTAssertTrue(addGroupCancel.firstMatch.waitForNonExistence(timeout: 8),
+                      "The add-group sheet did not dismiss after save.\n\(app.debugDescription)")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 8),
+                      "The keyboard did not dismiss after saving the new group")
+        tap("cups.close")
+        expect("today.cup.1", contains: "400")
+        app.terminate()
+
+        launch(["-demo", "-expired", "-restore-pro"], reset: false)
+        expect("today.cup.1", contains: "400")
+        tap("today.cup.1")
+        expect("today.total", contains: "1,150")
+        tap("today.presets")
+        XCTAssertFalse(app.buttons["cups.addGroup"].exists)
+        replace("cups.amount.1", with: "420")
+        tap("cups.save")
+        expect("today.cup.1", contains: "420")
+        tap("today.history")
+        tap("history.report")
+        expect("paywall.status", contains: "试用已结束")
+        tap("paywall.restore", scroll: true)
+        expect("paywall.status", contains: "已解锁")
+        tap("paywall.close")
+        tap("history.report")
+        XCTAssertTrue(element("report.count").waitForExistence(timeout: 8))
+    }
+
+    func testRestoreFailureIsShown() {
+        launch(["-paywall", "-expired", "-restore-fails"])
+        tap("paywall.restore", scroll: true)
+        expect("paywall.message", contains: "恢复购买未完成")
+        tap("paywall.close")
+        tap("today.cup.0")
+        expect("today.total", contains: "150 mL")
+    }
+
+    func testMilestoneCardCanBeDismissedAndSharePreparesPNG() {
+        launch(["-demo", "-milestone"], environment: ["WATERLOG_TEST_STORE_ID": "1234567890"])
+        tap("today.cup.1")
+        tap("today.share", scroll: true)
+        tap("share.copy", scroll: true)
+        tap("share.export", scroll: true)
+        expectShareRequest(type: "PNG")
+        if firstHittable(in: app.buttons.matching(identifier: "share.close")) == nil {
+            app.scrollViews.firstMatch.swipeDown()
+        }
+        tap("share.close")
+        XCTAssertTrue(element("today.milestone").exists)
+        tap("today.dismissMilestone", scroll: true)
+        tap("today.cup.0")
+        XCTAssertFalse(element("today.milestone").exists)
+    }
+
+    func testUnconfiguredCardKeepsPreviewAndExplainsExport() {
+        launch(["-demo"], environment: ["WATERLOG_TEST_STORE_ID": ""])
+        tap("today.share", scroll: true)
+        tap("share.export", scroll: true)
+        expect("form.error", contains: "下载链接尚未配置")
+    }
+
+    func testStoreShotsSimplified() { capture(.simplified) }
+    func testStoreShotsTraditional() { capture(.traditional) }
+    func testStoreShotsEnglish() { capture(.english) }
+
+    func testPaidScreenshot() {
+        launch(["-demo", "-paywall", "-paid-mode"])
+        XCTAssertTrue(element("paywall.title").waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["paywall.buy"].exists)
+        XCTAssertTrue(app.buttons["paywall.trial"].exists)
+        XCTAssertTrue(app.buttons["paywall.restore"].exists)
+        shot("paid-01-paywall")
+    }
+
+    private func capture(_ language: StoreLanguage) {
+        let runner = ProcessInfo.processInfo.environment
+        let liveID = runner["WATERLOG_STORE_ID"] ?? runner["TEST_RUNNER_WATERLOG_STORE_ID"]
+        let override = liveID.flatMap { $0.isEmpty ? nil : ["WATERLOG_TEST_STORE_ID": $0] } ?? [:]
+        launch(["-demo", "-store-shots"], language: language, environment: override)
+        let prefix = "store-\(language.rawValue)-"
+        expect("today.total", contains: "750")
+        shot(prefix + "01-home")
+        tap("today.cup.1")
+        expect("today.total", contains: "1,000")
+        XCTAssertTrue(app.buttons["today.undo"].exists)
+        shot(prefix + "02-undo")
+        tap("today.custom")
+        let amount = app.textFields["entry.amount"]
+        XCTAssertTrue(amount.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
+        amount.typeText("330")
+        shot(prefix + "03-custom")
+        tap("entry.cancel")
+        tap("today.history")
+        XCTAssertTrue(app.buttons["history.day.2026-11-19"].waitForExistence(timeout: 8))
+        shot(prefix + "04-history")
+        back()
+        tap("today.share", scroll: true)
+        XCTAssertTrue(element("share.card").waitForExistence(timeout: 8))
+        XCTAssertTrue(element("share.qr").waitForExistence(timeout: 8))
+        shot(prefix + "05-card")
+    }
+}

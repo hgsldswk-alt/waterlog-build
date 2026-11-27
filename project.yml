@@ -1,0 +1,126 @@
+name: WaterLog
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: zh-Hans
+  knownRegions: [zh-Hans, en, zh-Hant, ja, ko, de, es, fr, pt-BR, it, nl]
+settings:
+  base:
+    APP_ID: com.hgsldswk.waterlog
+    APP_STORE_ID: "6837218230"
+    MARKETING_VERSION: "1.0.2"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  WaterLog:
+    type: application
+    platform: iOS
+    sources: [WaterLog, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_ID)
+        TARGETED_DEVICE_FAMILY: "1"  # XcodeGen target 默认 1,2 会盖掉项目级，必须写在 target 上（11-20 饮水因此被要 iPad 截图）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: WaterLog AppStore
+    info:
+      path: WaterLog/Info.plist
+      properties:
+        CFBundleDisplayName: 饮水记录
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false
+        WaterLogProProductID: $(APP_ID).pro
+        WaterLogTrialProductID: $(APP_ID).trial
+        APP_STORE_ID: $(APP_STORE_ID)
+        CFBundleURLTypes:
+          - CFBundleURLName: com.hgsldswk.waterlog
+            CFBundleURLSchemes: [waterlog]
+    entitlements:
+      path: WaterLog/WaterLog.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.hgsldswk.waterlog]
+    dependencies:
+      - target: WaterLogWidget
+      - sdk: libsqlite3.tbd
+  WaterLogWidget:
+    type: app-extension
+    platform: iOS
+    sources: [WaterLogWidget, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.hgsldswk.waterlog.widget
+        TARGETED_DEVICE_FAMILY: "1"  # XcodeGen target 默认 1,2 会盖掉项目级，必须写在 target 上（11-20 饮水因此被要 iPad 截图）
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          PROVISIONING_PROFILE_SPECIFIER: WaterLog Widget AppStore
+    info:
+      path: WaterLogWidget/Info.plist
+      properties:
+        CFBundleDisplayName: 饮水记录
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: WaterLogWidget/WaterLogWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.hgsldswk.waterlog]
+    dependencies:
+      - sdk: libsqlite3.tbd
+  WaterLogTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - WaterLogTests
+      - path: WaterLog/ReminderService.swift
+      - path: Shared
+        excludes: [LogCupIntent.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_ID).tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - sdk: libsqlite3.tbd
+  WaterLogUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [WaterLogUITests]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_ID).uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: WaterLog
+    dependencies:
+      - target: WaterLog
+schemes:
+  WaterLog:
+    build:
+      targets:
+        WaterLog: all
+        WaterLogTests: [test]
+    test:
+      config: Debug
+      targets: [WaterLogTests]
+  WaterLogUI:
+    build:
+      targets:
+        WaterLog: all
+        WaterLogUITests: [test]
+    test:
+      config: Debug
+      targets: [WaterLogUITests]
